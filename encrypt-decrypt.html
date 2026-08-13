@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Local Encryptor</title>
+<style>
+:root{
+  --bg:#101114;--card:#191b20;--input:#23262d;--border:#343944;
+  --text:#f2f3f5;--muted:#9ca3af;--accent:#7aa2ff;
+  --good:#55d187;--bad:#ff7070;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;min-height:100vh;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+main{width:min(620px,100%);margin:auto;padding:20px}
+h1{font-size:24px;margin:0 0 5px}
+.subtitle{color:var(--muted);font-size:13px;margin-bottom:20px}
+.card{
+  background:var(--card);border:1px solid var(--border);border-radius:16px;
+  padding:18px;margin-bottom:14px;
+}
+label{display:block;color:var(--muted);font-size:13px;margin-bottom:7px}
+input,textarea{
+  width:100%;background:var(--input);color:var(--text);
+  border:1px solid var(--border);border-radius:10px;padding:12px;
+  font:inherit;outline:none;
+}
+input:focus,textarea:focus{border-color:var(--accent)}
+textarea{min-height:130px;resize:vertical}
+.field{margin-bottom:16px}
+.secret-wrap{display:flex;gap:7px}
+.secret-wrap input{flex:1}
+button{
+  border:0;border-radius:10px;padding:11px 15px;font:inherit;
+  font-weight:600;cursor:pointer;background:var(--accent);color:#07101d;
+}
+button.secondary{background:var(--input);border:1px solid var(--border);color:var(--text)}
+button:active{transform:translateY(1px)}
+.actions{display:flex;gap:8px}
+.actions button{flex:1}
+.result-wrap{position:relative}
+.result{
+  min-height:105px;white-space:pre-wrap;word-break:break-all;
+  background:#0c0d10;border:1px solid var(--border);border-radius:10px;
+  padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:13px;
+}
+.copy{margin-top:8px;width:100%}
+.status{font-size:13px;min-height:20px;margin-top:10px;color:var(--muted)}
+.status.good{color:var(--good)}
+.status.bad{color:var(--bad)}
+.note{
+  color:var(--muted);font-size:12px;line-height:1.55;margin-top:15px
+}
+details{margin-top:14px;color:var(--muted);font-size:12px}
+summary{cursor:pointer;color:var(--text)}
+@media(max-width:480px){
+  main{padding:12px}
+  .card{padding:15px}
+  .actions{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>🔐 Local Encryptor</h1>
+  <div class="subtitle">Encrypt or decrypt a value locally. Nothing is uploaded.</div>
+
+  <section class="card">
+    <div class="field">
+      <label for="master">Master password</label>
+      <div class="secret-wrap">
+        <input id="master" type="password" autocomplete="off"
+               placeholder="Enter your master password">
+        <button class="secondary" type="button" onclick="toggleMaster()">👁</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="value">Value</label>
+      <textarea id="value" spellcheck="false"
+        placeholder="Plain password to encrypt, or encrypted text to decrypt"></textarea>
+    </div>
+
+    <div class="actions">
+      <button type="button" onclick="encryptValue()">🔒 Encrypt</button>
+      <button type="button" class="secondary" onclick="decryptValue()">🔓 Decrypt</button>
+    </div>
+
+    <div id="status" class="status"></div>
+  </section>
+
+  <section class="card">
+    <label>Result</label>
+    <div id="result" class="result"></div>
+    <button class="copy" type="button" onclick="copyResult()">📋 Copy result</button>
+
+    <div class="note">
+      The master password is never saved. Encryption uses AES-256-GCM
+      with a fresh random salt and nonce for every encryption.
+    </div>
+
+    <details>
+      <summary>Format</summary>
+      <p>
+        The encrypted value contains only the random salt, nonce, and
+        ciphertext. There is no visible prefix or identifier.
+      </p>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+/*
+  Local Encryptor
+  ----------------
+  Format:
+    <base64url(salt)>.<base64url(iv)>.<base64url(ciphertext)>
+
+  Key derivation:
+    PBKDF2-HMAC-SHA-256
+    600,000 iterations
+    256-bit AES key
+
+  Cipher:
+    AES-256-GCM
+
+  No network requests.
+  No localStorage.
+  No cookies.
+  No external libraries.
+*/
+
+const ITERATIONS = 600000;
+const SALT_LENGTH = 16;
+const IV_LENGTH = 12;
+// No visible version prefix: the encrypted value stays as simple as possible.
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function bytesToBase64Url(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(text) {
+  const base64 = text.replace(/-/g, "+").replace(/_/g, "/")
+    + "=".repeat((4 - text.length % 4) % 4);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function randomBytes(length) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+async function deriveKey(password, salt) {
+  const passwordKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"]
+  );
+
+  return crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: ITERATIONS,
+      hash: "SHA-256"
+    },
+    passwordKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function getMaster() {
+  const master = document.getElementById("master").value;
+  if (!master) throw new Error("Enter your master password.");
+  return master;
+}
+
+function getValue() {
+  const value = document.getElementById("value").value;
+  if (!value) throw new Error("Enter a value.");
+  return value;
+}
+
+function setResult(text) {
+  document.getElementById("result").textContent = text;
+}
+
+function setStatus(text, good = false) {
+  const el = document.getElementById("status");
+  el.textContent = text;
+  el.className = "status " + (good ? "good" : "bad");
+}
+
+async function encryptValue() {
+  try {
+    const password = getMaster();
+    const plaintext = getValue();
+
+    const salt = randomBytes(SALT_LENGTH);
+    const iv = randomBytes(IV_LENGTH);
+    const key = await deriveKey(password, salt);
+
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      encoder.encode(plaintext)
+    );
+
+    const output =
+      bytesToBase64Url(salt) + "." +
+      bytesToBase64Url(iv) + "." +
+      bytesToBase64Url(new Uint8Array(ciphertext));
+
+    setResult(output);
+    setStatus("Encrypted successfully.", true);
+  } catch (e) {
+    setStatus(e.message || "Encryption failed.");
+  }
+}
+
+async function decryptValue() {
+  try {
+    const password = getMaster();
+    const input = getValue().trim();
+
+    const parts = input.split(".");
+    if (parts.length !== 3) {
+      throw new Error("Invalid encrypted value.");
+    }
+
+    const salt = base64UrlToBytes(parts[0]);
+    const iv = base64UrlToBytes(parts[1]);
+    const ciphertext = base64UrlToBytes(parts[2]);
+
+    const key = await deriveKey(password, salt);
+
+    let plaintext;
+    try {
+      plaintext = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv },
+        key,
+        ciphertext
+      );
+    } catch {
+      throw new Error("Wrong master password or damaged encrypted value.");
+    }
+
+    setResult(decoder.decode(plaintext));
+    setStatus("Decrypted successfully.", true);
+  } catch (e) {
+    setStatus(e.message || "Decryption failed.");
+  }
+}
+
+async function copyResult() {
+  const result = document.getElementById("result").textContent;
+  if (!result) {
+    setStatus("Nothing to copy.");
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(result);
+    setStatus("Copied. Clipboard will be cleared after 30 seconds.", true);
+
+    setTimeout(async () => {
+      try {
+        const current = await navigator.clipboard.readText();
+        if (current === result) await navigator.clipboard.writeText("");
+      } catch {}
+    }, 30000);
+  } catch {
+    setStatus("Clipboard access was blocked by the browser.");
+  }
+}
+
+function toggleMaster() {
+  const input = document.getElementById("master");
+  input.type = input.type === "password" ? "text" : "password";
+}
+
+if (!window.crypto || !window.crypto.subtle) {
+  setStatus("This browser does not support the required Web Crypto API.");
+}
+</script>
+</body>
+</html>
